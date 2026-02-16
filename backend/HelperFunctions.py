@@ -81,55 +81,130 @@ def _walk_linear_thread(conversation: Dict[str, Any]) -> List[Dict[str, Any]]:
     return ordered_nodes
 
 
+def _stream_prompts_from_json(
+    path: Path,
+    *,
+    max_prompts: Optional[int] = None,
+    include_empty: bool = False,
+) -> Tuple[List[PromptRecord], int, int, List[Dict[str, Any]]]:
+    """
+    Stream JSON and collect up to max_prompts (and count total). Uses ijson so the
+    full file is never loaded into memory. Returns (prompts, total_prompts, total_convos, per_convo_counts).
+    """
+    import ijson
+
+    prompts: List[PromptRecord] = []
+    total_prompt_count = 0
+    total_convo_count = 0
+    per_convo_counts: List[Dict[str, Any]] = []
+
+    with path.open("rb") as f:
+        for convo in ijson.items(f, "item"):
+            total_convo_count += 1
+            if not isinstance(convo, dict):
+                continue
+
+            convo_id = str(convo.get("id") or "")
+            title = str(convo.get("title") or "")
+            convo_create_time = convo.get("create_time")
+            user_prompt_count = 0
+
+            for node in _walk_linear_thread(convo):
+                message = node.get("message")
+                if not isinstance(message, dict):
+                    continue
+                author = message.get("author") or {}
+                if author.get("role") != "user":
+                    continue
+                text = _extract_text_from_message(message)
+                if text is None and not include_empty:
+                    continue
+                text = text or ""
+
+                user_prompt_count += 1
+                total_prompt_count += 1
+                if max_prompts is None or len(prompts) < max_prompts:
+                    prompts.append(
+                        PromptRecord(
+                            conversation_id=convo_id,
+                            conversation_title=title,
+                            conversation_create_time=convo_create_time,
+                            message_id=str(message.get("id") or ""),
+                            message_create_time=message.get("create_time"),
+                            prompt_text=text,
+                        )
+                    )
+
+            per_convo_counts.append({
+                "conversation_id": convo_id,
+                "title": title,
+                "conversation_create_time": convo_create_time,
+                "conversation_create_time_iso_utc": _utc_iso(convo_create_time),
+                "user_prompt_count": user_prompt_count,
+            })
+
+    return prompts, total_prompt_count, total_convo_count, per_convo_counts
+
+
 def parse_chatgpt_prompts(
     conversations_json_path: str | Path,
     *,
     include_empty: bool = False,
+    max_prompts: Optional[int] = None,
 ) -> Tuple[List[PromptRecord], Dict[str, Any]]:
     """
     Parse a ChatGPT export conversations.json and return:
-      1) a list of PromptRecord (USER prompts only, clean text)
+      1) a list of PromptRecord (USER prompts only). If max_prompts is set, only the first N are loaded (saves memory).
       2) a summary dict (counts, per-conversation counts, timestamps)
 
     Args:
         conversations_json_path: path to conversations.json from the ChatGPT data export zip
         include_empty: if True, keep prompts even when the text is empty/None (rare)
+        max_prompts: if set (e.g. 50), stream the JSON and only load the first N prompts (much lower memory for large files)
 
     Returns:
         (prompts, summary)
     """
     path = Path(conversations_json_path)
-    data = json.loads(path.read_text(encoding="utf-8"))
 
-    # Export is typically a list of conversation objects. :contentReference[oaicite:2]{index=2}
+    if max_prompts is not None:
+        try:
+            prompts, total_user_prompts, total_conversations, per_convo_counts = _stream_prompts_from_json(
+                path, max_prompts=max_prompts, include_empty=include_empty
+            )
+            summary = {
+                "total_conversations": total_conversations,
+                "total_user_prompts": total_user_prompts,
+                "per_conversation": per_convo_counts,
+            }
+            return prompts, summary
+        except Exception:
+            # Fallback to full parse if streaming fails (e.g. non-array JSON)
+            pass
+
+    # Full in-memory parse (original behavior)
+    data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, list):
         raise ValueError("Expected conversations.json to contain a list of conversations.")
 
-    prompts: List[PromptRecord] = []
-    per_convo_counts: List[Dict[str, Any]] = []
+    prompts = []
+    per_convo_counts = []
 
     for convo in data:
         if not isinstance(convo, dict):
             continue
-
         convo_id = str(convo.get("id") or "")
         title = str(convo.get("title") or "")
         convo_create_time = convo.get("create_time")
-
         user_prompt_count = 0
 
         for node in _walk_linear_thread(convo):
             message = node.get("message")
             if not isinstance(message, dict):
                 continue
-
             author = message.get("author") or {}
-            role = author.get("role")
-
-            # Only USER prompts
-            if role != "user":
+            if author.get("role") != "user":
                 continue
-
             text = _extract_text_from_message(message)
             if text is None and not include_empty:
                 continue
@@ -147,15 +222,13 @@ def parse_chatgpt_prompts(
                 )
             )
 
-        per_convo_counts.append(
-            {
-                "conversation_id": convo_id,
-                "title": title,
-                "conversation_create_time": convo_create_time,
-                "conversation_create_time_iso_utc": _utc_iso(convo_create_time),
-                "user_prompt_count": user_prompt_count,
-            }
-        )
+        per_convo_counts.append({
+            "conversation_id": convo_id,
+            "title": title,
+            "conversation_create_time": convo_create_time,
+            "conversation_create_time_iso_utc": _utc_iso(convo_create_time),
+            "user_prompt_count": user_prompt_count,
+        })
 
     summary = {
         "total_conversations": len([c for c in data if isinstance(c, dict)]),

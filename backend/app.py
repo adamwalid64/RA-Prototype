@@ -12,9 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from HelperFunctions import parse_chatgpt_prompts, prompts_to_jsonl, count_prompts_in_jsonl, generate_prompt_wordcloud
 import os
-from Models.grade_prompts import grade_prompt_with_ai, analyze_prompts_grading
-from Models.PE_classify_chats import analyze_chat_history as pe_analyze_chat_history
-from Models.SRL_classify_chats import critical_thinking_analysis as srl_critical_thinking_analysis
+# Models imported lazily in routes to reduce startup memory (helps on 512MB free tier)
 
 try:
     from reportlab.lib.pagesizes import letter
@@ -147,71 +145,75 @@ def health():
     return jsonify({"status": "ok"})
 
 # Upload file and store in memory variable
+# Max upload size: 10MB keeps us under 512MB RAM on free tier (no full file in memory)
+UPLOAD_MAX_BYTES = 10 * 1024 * 1024
+CHUNK_SIZE = 64 * 1024  # 64KB for streaming
+
+
+def _stream_upload_to_path(file, path: str, max_bytes: int) -> int:
+    """Stream upload to path in chunks. Returns bytes written. Raises if over max_bytes."""
+    written = 0
+    with open(path, "wb") as out:
+        while True:
+            chunk = file.read(CHUNK_SIZE)
+            if not chunk:
+                break
+            written += len(chunk)
+            if written > max_bytes:
+                out.close()
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+                raise ValueError(f"File size exceeds {max_bytes / (1024 * 1024):.0f}MB limit")
+            out.write(chunk)
+    return written
+
+
 @app.route("/api/upload", methods=["POST"])
 def upload_file():
-    """Handle file upload and store in memory variable"""
+    """Handle file upload: stream to disk (no full file in memory)."""
     try:
-        if 'file' not in request.files:
+        if "file" not in request.files:
             return jsonify({"error": "No file provided"}), 400
-        
-        file = request.files['file']
-        
-        if file.filename == '':
+        file = request.files["file"]
+        if file.filename == "":
             return jsonify({"error": "No file selected"}), 400
-        
-        # Validate file extension
-        allowed_extensions = {'.json', '.csv', '.txt'}
+
+        allowed_extensions = {".json", ".csv", ".txt"}
         file_ext = os.path.splitext(file.filename)[1].lower()
-        
         if file_ext not in allowed_extensions:
             return jsonify({"error": "File must be JSON, CSV, or TXT format"}), 400
-        
-        # Read file content
-        file_content = file.read()
-        file_size = len(file_content)
-        
-        
-        # Validate file size (50MB limit)
-        max_size = 50 * 1024 * 1024  # 50MB
-        if file_size > max_size:
-            return jsonify({"error": f"File size exceeds {max_size / (1024 * 1024)}MB limit"}), 400
-        
-        # Parse JSON if it's a JSON file
-        try:
-            if file_ext == '.json':
-                json_content = json.loads(file_content.decode('utf-8'))
-            else:
-                # For CSV/TXT, store as plain text
-                json_content = file_content.decode('utf-8')
-        except json.JSONDecodeError:
-            return jsonify({"error": "Invalid JSON format"}), 400
-        except UnicodeDecodeError:
-            return jsonify({"error": "File encoding error. Please use UTF-8 encoding"}), 400
-        
-        # Generate unique IDs
+
         dataset_id = str(uuid.uuid4())
         upload_id = str(uuid.uuid4())
-        
-        # Store in memory variable
+        safe_name = secure_filename(file.filename)
+        store_path = os.path.join(tempfile.gettempdir(), f"ra_upload_{dataset_id}{file_ext}")
+
+        try:
+            file_size = _stream_upload_to_path(file, store_path, UPLOAD_MAX_BYTES)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+
+        # No JSON parse at upload (would load full file into memory). Invalid JSON will fail on first use.
+
         uploaded_datasets[dataset_id] = {
             "upload_id": upload_id,
-            "file_name": secure_filename(file.filename),
+            "file_name": safe_name,
             "file_size": file_size,
-            "uploaded_at": datetime.now().isoformat() + "Z",
-            "content": json_content,
-            "file_type": file_ext
+            "uploaded_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "file_path": store_path,
+            "file_type": file_ext,
         }
-        
-        # Return response matching frontend UploadResponse interface
+
         return jsonify({
             "upload_id": upload_id,
             "dataset_id": dataset_id,
             "message": "File uploaded successfully",
-            "file_name": secure_filename(file.filename),
+            "file_name": safe_name,
             "file_size": file_size,
-            "uploaded_at": uploaded_datasets[dataset_id]["uploaded_at"]
+            "uploaded_at": uploaded_datasets[dataset_id]["uploaded_at"],
         }), 200
-        
     except Exception as e:
         return jsonify({"error": f"Upload failed: {str(e)}"}), 500
 
@@ -219,29 +221,19 @@ def upload_file():
 @app.route("/api/results/<dataset_id>", methods=["GET"])
 def get_results(dataset_id):
     try:
-        # Check if dataset exists
         if dataset_id not in uploaded_datasets:
             return jsonify({"error": "Dataset not found"}), 404
-        
-        # Get the prompt data
-        prompt_data = uploaded_datasets[dataset_id]["content"]
-        file_type = uploaded_datasets[dataset_id]["file_type"]
 
-        if file_type != '.json':
+        ds = uploaded_datasets[dataset_id]
+        file_path = ds["file_path"]
+        file_type = ds["file_type"]
+
+        if file_type != ".json":
             return jsonify({"error": "Only JSON files are currently supported"}), 400
-        
-        # Write JSON data to temporary file for parsing
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False, encoding='utf-8') as tmp_file:
-            json.dump(prompt_data, tmp_file, ensure_ascii=False)
-            tmp_json_path = tmp_file.name
-        
-        try:
-            # Parse prompts from the temporary file
-            prompts, summary = parse_chatgpt_prompts(tmp_json_path)
-        finally:
-            # Clean up temp file
-            os.unlink(tmp_json_path)
-        
+
+        # Parse from stored file; only first 50 prompts loaded (streaming, low memory)
+        prompts, summary = parse_chatgpt_prompts(file_path, max_prompts=50)
+
         # Create temporary JSONL file
         with tempfile.NamedTemporaryFile(mode='w', suffix='.jsonl', delete=False, encoding='utf-8') as tmp_jsonl:
             prompts_to_jsonl(prompts, tmp_jsonl.name)
@@ -251,30 +243,25 @@ def get_results(dataset_id):
             # Count the number of prompts
             num_prompts = count_prompts_in_jsonl(jsonl_path)
             
-            # Generate word cloud (returns total_word_count, word_counts) - uses ALL prompts
-            word_cloud_path = os.path.join(tempfile.gettempdir(), f"wordcloud_{dataset_id}.png")
-            total_word_count, word_counts = generate_prompt_wordcloud(jsonl_path, output_png=word_cloud_path)
-            
-            # Read word cloud image as base64
+            # Word cloud is optional: skip if SKIP_WORDCLOUD=1 or on failure (saves ~100MB+ on free tier)
             word_cloud_base64 = None
-            if os.path.exists(word_cloud_path):
-                with open(word_cloud_path, 'rb') as img_file:
-                    img_data = img_file.read()
-                    word_cloud_base64 = base64.b64encode(img_data).decode('utf-8')
-                
-                # Clean up word cloud file (with retry for Windows file handle issues)
-                import time
-                max_retries = 3
-                for attempt in range(max_retries):
-                    try:
-                        os.unlink(word_cloud_path)
-                        break
-                    except PermissionError:
-                        if attempt < max_retries - 1:
-                            time.sleep(0.1)  # Wait 100ms before retry
-                        else:
-                            # If we can't delete it, that's okay - temp files will be cleaned up eventually
-                            print(f"Warning: Could not delete temp file {word_cloud_path}, will be cleaned up later")
+            if not os.environ.get("SKIP_WORDCLOUD"):
+                try:
+                    word_cloud_path = os.path.join(tempfile.gettempdir(), f"wordcloud_{dataset_id}.png")
+                    generate_prompt_wordcloud(jsonl_path, output_png=word_cloud_path)
+                    if os.path.exists(word_cloud_path):
+                        with open(word_cloud_path, 'rb') as img_file:
+                            word_cloud_base64 = base64.b64encode(img_file.read()).decode('utf-8')
+                        import time
+                        for attempt in range(3):
+                            try:
+                                os.unlink(word_cloud_path)
+                                break
+                            except PermissionError:
+                                if attempt < 2:
+                                    time.sleep(0.1)
+                except (MemoryError, Exception) as e:
+                    print(f"Word cloud skipped: {e}")
             
             # Read a few prompts for preview (first 5)
             prompt_previews = []
@@ -318,12 +305,13 @@ def get_results(dataset_id):
                 parts.append("Dimension averages: " + ", ".join(f"{k}: {v:.1f}" for k, v in dim_avg.items()))
             reflection["overall_summary"] = " ".join(parts)
 
-        # Build response matching frontend expectations (no grading yet - user must click button)
+        # total_prompts: show full count from stream; we only loaded first 50 for display/analysis
+        total_in_file = summary.get("total_user_prompts", num_prompts)
         response = {
             "dataset_id": dataset_id,
             "analysis": {
                 "dataset_id": dataset_id,
-                "total_prompts": num_prompts,
+                "total_prompts": total_in_file,
                 "categories": [],
                 "breakdown": {},
                 "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -353,41 +341,25 @@ def get_results(dataset_id):
 def analyze_classification(dataset_id):
     """Analyze 50 sample prompts using Paul-Elder framework"""
     try:
-        # Check if dataset exists
         if dataset_id not in uploaded_datasets:
             return jsonify({"error": "Dataset not found"}), 404
-        
-        # Get the prompt data
-        prompt_data = uploaded_datasets[dataset_id]["content"]
-        file_type = uploaded_datasets[dataset_id]["file_type"]
 
-        if file_type != '.json':
+        ds = uploaded_datasets[dataset_id]
+        file_path = ds["file_path"]
+        file_type = ds["file_type"]
+        if file_type != ".json":
             return jsonify({"error": "Only JSON files are currently supported"}), 400
-        
-        # Write JSON data to temporary file for parsing
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False, encoding='utf-8') as tmp_file:
-            json.dump(prompt_data, tmp_file, ensure_ascii=False)
-            tmp_json_path = tmp_file.name
-        
-        try:
-            # Parse prompts from the temporary file
-            prompts, summary = parse_chatgpt_prompts(tmp_json_path)
-        finally:
-            # Clean up temp file
-            os.unlink(tmp_json_path)
-        
-        # Create temporary JSONL file
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.jsonl', delete=False, encoding='utf-8') as tmp_jsonl:
+
+        prompts, _ = parse_chatgpt_prompts(file_path, max_prompts=50)
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False, encoding="utf-8") as tmp_jsonl:
             prompts_to_jsonl(prompts, tmp_jsonl.name)
             jsonl_path = tmp_jsonl.name
-        
+
         try:
-            # Extract prompts for classification (limit to 50)
+            # Prompts already limited to 50 by parse_chatgpt_prompts(max_prompts=50)
             prompt_texts = []
-            with open(jsonl_path, 'r', encoding='utf-8') as f:
-                for i, line in enumerate(f):
-                    if i >= 50:  # Limit to 50 prompts
-                        break
+            with open(jsonl_path, "r", encoding="utf-8") as f:
+                for line in f:
                     try:
                         prompt_obj = json.loads(line.strip())
                         prompt_text = prompt_obj.get("prompt_text", "").strip()
@@ -418,6 +390,7 @@ def analyze_classification(dataset_id):
                 })
             
             try:
+                from Models.PE_classify_chats import analyze_chat_history as pe_analyze_chat_history
                 classification_df, classification_stats = pe_analyze_chat_history(prompt_texts, progress_callback=update_progress)
                 _progress_slot(dataset_id, 'paul_elder')['status'] = 'complete'
             except ValueError as e:
@@ -530,26 +503,19 @@ def analyze_srl(dataset_id):
     try:
         if dataset_id not in uploaded_datasets:
             return jsonify({"error": "Dataset not found"}), 404
-        prompt_data = uploaded_datasets[dataset_id]["content"]
-        file_type = uploaded_datasets[dataset_id]["file_type"]
-        if file_type != '.json':
+        ds = uploaded_datasets[dataset_id]
+        file_path = ds["file_path"]
+        file_type = ds["file_type"]
+        if file_type != ".json":
             return jsonify({"error": "Only JSON files are currently supported"}), 400
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False, encoding='utf-8') as tmp_file:
-            json.dump(prompt_data, tmp_file, ensure_ascii=False)
-            tmp_json_path = tmp_file.name
-        try:
-            prompts, _ = parse_chatgpt_prompts(tmp_json_path)
-        finally:
-            os.unlink(tmp_json_path)
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.jsonl', delete=False, encoding='utf-8') as tmp_jsonl:
+        prompts, _ = parse_chatgpt_prompts(file_path, max_prompts=50)
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False, encoding="utf-8") as tmp_jsonl:
             prompts_to_jsonl(prompts, tmp_jsonl.name)
             jsonl_path = tmp_jsonl.name
         try:
             prompt_texts = []
-            with open(jsonl_path, 'r', encoding='utf-8') as f:
-                for i, line in enumerate(f):
-                    if i >= 50:
-                        break
+            with open(jsonl_path, "r", encoding="utf-8") as f:
+                for line in f:
                     try:
                         prompt_obj = json.loads(line.strip())
                         prompt_text = prompt_obj.get("prompt_text", "").strip()
@@ -559,7 +525,7 @@ def analyze_srl(dataset_id):
                         continue
             if not prompt_texts:
                 return jsonify({"error": "No prompts found to analyze"}), 400
-            slot = _progress_slot(dataset_id, 'srl')
+            slot = _progress_slot(dataset_id, "srl")
             slot.update({
                 'current': 0, 'total': len(prompt_texts),
                 'message': f"Starting SRL analysis of {len(prompt_texts)} prompts...", 'status': 'running'
@@ -569,6 +535,7 @@ def analyze_srl(dataset_id):
                     'current': current, 'total': total, 'message': message,
                     'status': 'running' if current < total else 'complete'
                 })
+            from Models.SRL_classify_chats import critical_thinking_analysis as srl_critical_thinking_analysis
             df = srl_critical_thinking_analysis(prompt_texts, progress_callback=update_progress)
             _progress_slot(dataset_id, 'srl')['status'] = 'complete'
             phase_counts = df['zimmerman_phase'].value_counts()
@@ -614,26 +581,19 @@ def analyze_grading(dataset_id):
     try:
         if dataset_id not in uploaded_datasets:
             return jsonify({"error": "Dataset not found"}), 404
-        prompt_data = uploaded_datasets[dataset_id]["content"]
-        file_type = uploaded_datasets[dataset_id]["file_type"]
-        if file_type != '.json':
+        ds = uploaded_datasets[dataset_id]
+        file_path = ds["file_path"]
+        file_type = ds["file_type"]
+        if file_type != ".json":
             return jsonify({"error": "Only JSON files are currently supported"}), 400
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False, encoding='utf-8') as tmp_file:
-            json.dump(prompt_data, tmp_file, ensure_ascii=False)
-            tmp_json_path = tmp_file.name
-        try:
-            prompts, _ = parse_chatgpt_prompts(tmp_json_path)
-        finally:
-            os.unlink(tmp_json_path)
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.jsonl', delete=False, encoding='utf-8') as tmp_jsonl:
+        prompts, _ = parse_chatgpt_prompts(file_path, max_prompts=50)
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False, encoding="utf-8") as tmp_jsonl:
             prompts_to_jsonl(prompts, tmp_jsonl.name)
             jsonl_path = tmp_jsonl.name
         try:
             prompt_texts = []
-            with open(jsonl_path, 'r', encoding='utf-8') as f:
-                for i, line in enumerate(f):
-                    if i >= 50:
-                        break
+            with open(jsonl_path, "r", encoding="utf-8") as f:
+                for line in f:
                     try:
                         prompt_obj = json.loads(line.strip())
                         prompt_text = prompt_obj.get("prompt_text", "").strip()
@@ -643,7 +603,7 @@ def analyze_grading(dataset_id):
                         continue
             if not prompt_texts:
                 return jsonify({"error": "No prompts found to grade"}), 400
-            slot = _progress_slot(dataset_id, 'grading')
+            slot = _progress_slot(dataset_id, "grading")
             slot.update({
                 'current': 0, 'total': len(prompt_texts),
                 'message': f"Grading {len(prompt_texts)} prompts...", 'status': 'running'
@@ -728,21 +688,14 @@ def export_results(dataset_id):
             "file_type": ds.get("file_type"),
         }
 
-        # Recompute basic prompt stats (total prompts + summary) similar to get_results
-        prompt_data = ds["content"]
+        # Recompute basic prompt stats (total prompts + summary) from stored file
+        file_path = ds["file_path"]
         file_type = ds["file_type"]
         num_prompts = None
         summary = None
 
         if file_type == ".json":
-            with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as tmp_file:
-                json.dump(prompt_data, tmp_file, ensure_ascii=False)
-                tmp_json_path = tmp_file.name
-            try:
-                prompts, summary = parse_chatgpt_prompts(tmp_json_path)
-            finally:
-                os.unlink(tmp_json_path)
-
+            prompts, summary = parse_chatgpt_prompts(file_path, max_prompts=50)
             with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False, encoding="utf-8") as tmp_jsonl:
                 prompts_to_jsonl(prompts, tmp_jsonl.name)
                 jsonl_path = tmp_jsonl.name
