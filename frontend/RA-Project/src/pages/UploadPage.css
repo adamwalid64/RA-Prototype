@@ -1,0 +1,253 @@
+.upload-page {
+  min-height: 100vh;
+  background: #1a1a1a;
+  padding: 2rem;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+}
+
+.upload-container {
+  max-width: 900px;
+  width: 100%;
+  background: white;
+  border-radius: 16px;
+  padding: 3rem;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+}
+
+.upload-header {
+  text-align: center;
+  margin-bottom: 2rem;
+}
+
+.upload-header h1 {
+  color: #1f2937;
+  font-size: 2rem;
+  font-weight: 700;
+  margin-bottom: 0.5rem;
+}
+
+.upload-header p {
+  color: #6b7280;
+  font-size: 1rem;
+}
+
+.upload-area {
+  border: 2px dashed #cbd5e1;
+  border-radius: 12px;
+  padding: 3rem 2rem;
+  text-align: center;
+  background: #f8fafc;
+  transition: all 0.3s ease;
+  cursor: pointer;
+  position: relative;
+}
+
+.upload-area:hover {
+  border-color: #22B800;
+  background: #f1f5f9;
+}
+
+.file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  overflow: hidden;
+}
+
+.upload-label {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  cursor: pointer;
+}
+
+.upload-icon {
+  font-size: 3rem;
+}
+
+.upload-text {
+  font-size: 1.125rem;
+  color: #475569;
+}
+
+.upload-text strong {
+  color: #22B800;
+}
+
+.upload-hint {
+  font-size: 0.875rem;
+  color: #94a3b8;
+}
+
+.selected-file {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 1rem;
+  padding: 0.75rem 1rem;
+  background: #2d2d2d;
+  border-radius: 8px;
+  color: #22B800;
+}
+
+.file-icon {
+  font-size: 1.25rem;
+}
+
+.file-name {
+  flex: 1;
+  font-weight: 500;
+}
+
+.clear-file {
+  background: none;
+  border: none;
+  font-size: 1.5rem;
+  color: #22B800;
+  cursor: pointer;
+  padding: 0;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  transition: background 0.2s;
+}
+
+.clear-file:hover {
+  background: #4a4a4a;
+}
+
+.validation-errors,
+.error-message {
+  margin-top: 1rem;
+  padding: 0.75rem 1rem;
+  background: #fee2e2;
+  border: 1px solid #fca5a5;
+  border-radius: 8px;
+  color: #991b1b;
+  font-size: 0.875rem;
+}
+
+.validation-errors {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.upload-button {
+  width: 100%;
+  margin-top: 1.5rem;
+  padding: 1rem 2rem;
+  background: #22B800;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 1.125rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.upload-button:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 20px rgba(34, 184, 0, 0.4);
+  background: #1ea600;
+}
+
+.upload-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Export Tip Section */
+.export-tip {
+  background: #f0f9ff;
+  border: 2px solid #bae6fd;
+  border-radius: 12px;
+  padding: 1.5rem;
+  margin-bottom: 2rem;
+}
+
+.tip-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.tip-icon {
+  font-size: 1.5rem;
+}
+
+.tip-header h3 {
+  color: #1e40af;
+  font-size: 1.125rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+.tip-content {
+  color: #1e3a8a;
+}
+
+.tip-intro {
+  font-size: 0.9375rem;
+  margin-bottom: 1rem;
+  line-height: 1.6;
+}
+
+.tip-steps {
+  margin: 0 0 1rem 1.5rem;
+  padding: 0;
+  list-style: decimal;
+  font-size: 0.9375rem;
+  line-height: 1.8;
+}
+
+.tip-steps li {
+  margin-bottom: 0.5rem;
+  padding-left: 0.5rem;
+}
+
+.tip-steps li strong {
+  color: #1e40af;
+  font-weight: 600;
+}
+
+.tip-steps a {
+  color: #2563eb;
+  text-decoration: underline;
+}
+
+.tip-steps a:hover {
+  color: #1d4ed8;
+}
+
+.tip-steps code {
+  background: #e0f2fe;
+  padding: 0.125rem 0.375rem;
+  border-radius: 4px;
+  font-family: 'Courier New', monospace;
+  font-size: 0.875rem;
+  color: #1e40af;
+  font-weight: 600;
+}
+
+.tip-note {
+  font-size: 0.875rem;
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid #bae6fd;
+  line-height: 1.6;
+  color: #1e3a8a;
+}
+
+.tip-note strong {
+  color: #1e40af;
+}

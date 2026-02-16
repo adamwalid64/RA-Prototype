@@ -1,0 +1,281 @@
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass, asdict
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+from collections import Counter
+
+
+@dataclass(frozen=True)
+class PromptRecord:
+    conversation_id: str
+    conversation_title: str
+    conversation_create_time: Optional[float]
+
+    message_id: str
+    message_create_time: Optional[float]
+
+    prompt_text: str
+
+
+def _utc_iso(ts: Optional[float]) -> Optional[str]:
+    if ts is None:
+        return None
+    try:
+        return datetime.fromtimestamp(float(ts), tz=timezone.utc).isoformat()
+    except Exception:
+        return None
+
+
+def _extract_text_from_message(message: Dict[str, Any]) -> Optional[str]:
+    """
+    ChatGPT exports typically store text as:
+      message["content"]["content_type"] == "text"
+      message["content"]["parts"] -> list[str]
+    We join parts with newlines.
+
+    Returns None if there's no usable text content.
+    """
+    content = message.get("content") or {}
+    ctype = content.get("content_type")
+
+    # Most common case: plain text
+    if ctype == "text":
+        parts = content.get("parts") or []
+        # parts often looks like ["your text..."]
+        text = "\n".join([p for p in parts if isinstance(p, str)]).strip()
+        return text or None
+
+    # Some exports include other content types (images, code, etc.).
+    # If you later want those too, you can extend here.
+    return None
+
+
+def _walk_linear_thread(conversation: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Walks backward from conversation["current_node"] via each node's "parent"
+    to reconstruct the selected branch of the conversation in chronological order.
+
+    This pattern is widely used for ChatGPT export parsing. :contentReference[oaicite:1]{index=1}
+    """
+    mapping: Dict[str, Any] = conversation.get("mapping") or {}
+    current_node = conversation.get("current_node")
+
+    ordered_nodes: List[Dict[str, Any]] = []
+    seen = set()
+
+    while current_node:
+        if current_node in seen:
+            # safety guard against cycles / corruption
+            break
+        seen.add(current_node)
+
+        node = mapping.get(current_node) or {}
+        ordered_nodes.append(node)
+        current_node = node.get("parent")
+
+    ordered_nodes.reverse()
+    return ordered_nodes
+
+
+def parse_chatgpt_prompts(
+    conversations_json_path: str | Path,
+    *,
+    include_empty: bool = False,
+) -> Tuple[List[PromptRecord], Dict[str, Any]]:
+    """
+    Parse a ChatGPT export conversations.json and return:
+      1) a list of PromptRecord (USER prompts only, clean text)
+      2) a summary dict (counts, per-conversation counts, timestamps)
+
+    Args:
+        conversations_json_path: path to conversations.json from the ChatGPT data export zip
+        include_empty: if True, keep prompts even when the text is empty/None (rare)
+
+    Returns:
+        (prompts, summary)
+    """
+    path = Path(conversations_json_path)
+    data = json.loads(path.read_text(encoding="utf-8"))
+
+    # Export is typically a list of conversation objects. :contentReference[oaicite:2]{index=2}
+    if not isinstance(data, list):
+        raise ValueError("Expected conversations.json to contain a list of conversations.")
+
+    prompts: List[PromptRecord] = []
+    per_convo_counts: List[Dict[str, Any]] = []
+
+    for convo in data:
+        if not isinstance(convo, dict):
+            continue
+
+        convo_id = str(convo.get("id") or "")
+        title = str(convo.get("title") or "")
+        convo_create_time = convo.get("create_time")
+
+        user_prompt_count = 0
+
+        for node in _walk_linear_thread(convo):
+            message = node.get("message")
+            if not isinstance(message, dict):
+                continue
+
+            author = message.get("author") or {}
+            role = author.get("role")
+
+            # Only USER prompts
+            if role != "user":
+                continue
+
+            text = _extract_text_from_message(message)
+            if text is None and not include_empty:
+                continue
+            text = text or ""
+
+            user_prompt_count += 1
+            prompts.append(
+                PromptRecord(
+                    conversation_id=convo_id,
+                    conversation_title=title,
+                    conversation_create_time=convo_create_time,
+                    message_id=str(message.get("id") or ""),
+                    message_create_time=message.get("create_time"),
+                    prompt_text=text,
+                )
+            )
+
+        per_convo_counts.append(
+            {
+                "conversation_id": convo_id,
+                "title": title,
+                "conversation_create_time": convo_create_time,
+                "conversation_create_time_iso_utc": _utc_iso(convo_create_time),
+                "user_prompt_count": user_prompt_count,
+            }
+        )
+
+    summary = {
+        "total_conversations": len([c for c in data if isinstance(c, dict)]),
+        "total_user_prompts": len(prompts),
+        "per_conversation": per_convo_counts,
+    }
+    return prompts, summary
+
+
+def prompts_to_jsonl(prompts: Iterable[PromptRecord], out_path: str | Path) -> None:
+    """
+    Convenience helper: write prompts as JSON Lines (one prompt per line),
+    great for analysis pipelines.
+    """
+    out_path = Path(out_path)
+    with out_path.open("w", encoding="utf-8") as f:
+        for p in prompts:
+            row = asdict(p)
+            row["conversation_create_time_iso_utc"] = _utc_iso(p.conversation_create_time)
+            row["message_create_time_iso_utc"] = _utc_iso(p.message_create_time)
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+# Count the number of prompts in a JSONL file
+def count_prompts_in_jsonl(path: str) -> int:
+    """
+    Count how many prompts (lines) are in a JSONL file.
+    Each line corresponds to one prompt.
+    """
+    with open(path, "r", encoding="utf-8") as f:
+        return sum(1 for _ in f)
+
+
+# Analyze word frequency in prompts
+def generate_prompt_wordcloud(
+    jsonl_path: str,
+    *,
+    output_png: Optional[str] = "prompt_wordcloud.png",
+    max_words: int = 200,
+    min_word_len: int = 3,
+) -> Tuple[int, Counter]:
+    """
+    Reads prompts from a JSONL file and generates a word cloud image.
+
+    Returns:
+      total_word_count: total number of words across all prompts (after basic cleaning)
+      word_counts: Counter of token frequencies used in the word cloud
+
+    Notes:
+      - Requires: pip install wordcloud matplotlib
+      - Expects each JSONL line to include "prompt_text"
+    """
+    # Lightweight stopword list (extend as you like)
+    stopwords = {
+        "the","a","an","and","or","but","if","then","else","so","to","of","in","on","for","with","as","at","by",
+        "is","are","was","were","be","been","being","it","its","this","that","these","those",
+        "i","me","my","we","our","you","your","they","them","their",
+        "do","does","did","doing","can","could","should","would","will","just",
+        "what","why","how","when","where","who","which",
+        "please","help","make","create","write","explain",  # common prompt filler words
+    }
+
+    # Read + concatenate all prompt text
+    texts = []
+    with open(jsonl_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            obj = json.loads(line)
+            txt = obj.get("prompt_text", "")
+            if isinstance(txt, str) and txt.strip():
+                texts.append(txt)
+
+    combined = "\n".join(texts).lower()
+
+    # Tokenize: keep words + apostrophes, drop numbers/punct
+    tokens = re.findall(r"[a-z']+", combined)
+
+    # Filter tokens
+    clean_tokens = [
+        t for t in tokens
+        if len(t) >= min_word_len and t not in stopwords and not t.startswith("'") and not t.endswith("'")
+    ]
+
+    total_word_count = len(clean_tokens)
+    word_counts = Counter(clean_tokens)
+
+    # Build word cloud
+    try:
+        import matplotlib
+        matplotlib.use('Agg')  # Use non-interactive backend for server environments
+        from wordcloud import WordCloud
+        import matplotlib.pyplot as plt
+    except ImportError as e:
+        raise ImportError(
+            "Missing dependency. Run: pip install wordcloud matplotlib"
+        ) from e
+
+    wc = WordCloud(
+        width=1200,
+        height=700,
+        background_color="white",
+        max_words=max_words,
+        collocations=False,  # prevents bigrams like "machine_learning" dominating
+    ).generate_from_frequencies(word_counts)
+
+    # Render + optionally save
+    fig = plt.figure(figsize=(12, 7))
+    plt.imshow(wc, interpolation="bilinear")
+    plt.axis("off")
+    plt.tight_layout()
+
+    if output_png:
+        plt.savefig(output_png, dpi=200, bbox_inches="tight")
+    
+    plt.close(fig)  # Close figure to free memory
+    plt.close('all')  # Ensure all figures are closed (Windows compatibility)
+    
+    # Small delay to ensure file handle is released on Windows
+    import time
+    time.sleep(0.05)  # 50ms delay
+
+    return total_word_count, word_counts
