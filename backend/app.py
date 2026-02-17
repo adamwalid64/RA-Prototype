@@ -145,8 +145,8 @@ def health():
     return jsonify({"status": "ok"})
 
 # Upload file and store in memory variable
-# Max upload size: 10MB keeps us under 512MB RAM on free tier (no full file in memory)
-UPLOAD_MAX_BYTES = 10 * 1024 * 1024
+# Max upload size: 50MB (streamed) – safe with streaming + first-50-prompts parser
+UPLOAD_MAX_BYTES = 50 * 1024 * 1024
 CHUNK_SIZE = 64 * 1024  # 64KB for streaming
 
 
