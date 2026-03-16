@@ -6,7 +6,9 @@ import type {
   ExportResponse 
 } from './types';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000';
+const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL ||
+  (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5000');
 
 const apiClient = axios.create({
   baseURL: API_BASE_URL,
@@ -16,9 +18,10 @@ const apiClient = axios.create({
 });
 
 // Upload file and get dataset_id
-export const uploadFile = async (file: File): Promise<UploadResponse> => {
+export const uploadFile = async (file: File, apiKey: string): Promise<UploadResponse> => {
   const formData = new FormData();
   formData.append('file', file);
+  formData.append('api_key', apiKey);
   
   const response = await apiClient.post<UploadResponse>('/api/upload', formData, {
     headers: {
@@ -35,7 +38,7 @@ export const getResults = async (datasetId: string): Promise<ReflectionResults> 
   return response.data;
 };
 
-// Analyze classification using Paul-Elder framework (50 sample prompts)
+// Analyze classification using Paul-Elder framework (up to 25 conversations)
 export const analyzeClassification = async (datasetId: string): Promise<{
   dataset_id: string;
   categories: Array<{
@@ -59,18 +62,72 @@ export const analyzeClassification = async (datasetId: string): Promise<{
   return response.data;
 };
 
-// Analyze SRL (Self-Regulated Learning) - Zimmerman, COPES, Bloom's (50 sample prompts)
+// Analyze SRL (Self-Regulated Learning) - Zimmerman, COPES, Bloom's (up to 25 conversations)
 export const analyzeSRL = async (datasetId: string): Promise<{
   dataset_id: string;
   phase_distribution: { [phase: string]: number };
   copes_average: number;
   blooms_distribution: { [name: string]: number };
   blooms_average_level: number;
-  message_results: Array<{
+  critical_thinking_summary: {
+    critical_thinking: number;
+    developing_critical_thinking: number;
+    efficient_help_seeking: number;
+    low_critical_thinking: number;
+    unclassifiable: number;
+    critical_thinking_rate_percent: number;
+    non_critical_thinking_rate_percent: number;
+    category_percentages: {
+      'Critical Thinking': number;
+      'Developing Critical Thinking': number;
+      'Efficient Help-Seeking': number;
+      'Low Critical Thinking': number;
+    };
+    categories_present: string[];
+  };
+  conversation_results: Array<{
+    chat_id: string;
+    topic: string;
+    message_count: number;
+    sample_messages: string[];
+    zimmerman_phase: string;
+    zimmerman: {
+      dominant_phase: string;
+      phases_present: string[];
+      distribution_percent: {
+        forethought: number;
+        performance: number;
+        self_reflection: number;
+      };
+    };
+    copes_score: number;
+    copes_components: {
+      C: number;
+      O: number;
+      P: number;
+      E: number;
+      S: number;
+      total: number;
+    };
+    blooms_level: number | null;
+    blooms_name: string;
+    blooms_confidence: number;
+    blooms: {
+      level: number | null;
+      name: string;
+      confidence: number;
+      unclassifiable: boolean;
+    };
+    is_critical_thinking: boolean | null;
+    ct_classification: string;
+    ct_rationale: string;
+  }>;
+  // Backward-compatible field used by older frontend code
+  message_results?: Array<{
     message: string;
     zimmerman_phase: string;
     copes_score: number;
-    blooms_level: number;
+    blooms_level: number | null;
     blooms_name: string;
   }>;
   analyzed_count: number;
@@ -80,7 +137,7 @@ export const analyzeSRL = async (datasetId: string): Promise<{
   return response.data;
 };
 
-// Analyze prompt quality (grading) - 50 sample prompts
+// Analyze prompt quality (grading) - up to 25 conversations
 export const analyzeGrading = async (datasetId: string): Promise<{
   dataset_id: string;
   grading_results: {
@@ -120,7 +177,7 @@ export const getAnalysisProgress = async (
 // Export results (JSON or PDF)
 export const exportResults = async (
   datasetId: string, 
-  fileType: 'json' | 'pdf' = 'json'
+  fileType: 'csv' | 'pdf' = 'csv'
 ): Promise<Blob> => {
   const response = await apiClient.get(`/api/export/${datasetId}`, {
     params: { format: fileType },

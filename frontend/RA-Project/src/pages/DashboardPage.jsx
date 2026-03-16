@@ -27,9 +27,13 @@ const DashboardPage = () => {
   const [classificationData, setClassificationData] = useState(null);
   const [classificationLoading, setClassificationLoading] = useState(false);
   const [classificationError, setClassificationError] = useState(null);
-  const [analysisProgress, setAnalysisProgress] = useState({ current: 0, total: 50, message: '', status: 'idle' });
-  const [progressMessages, setProgressMessages] = useState([]);
-  const [currentAnalysis, setCurrentAnalysis] = useState(null);
+  // Per-framework progress so Paul Elder, SRL, and Grading don't overwrite each other
+  const [paulElderProgress, setPaulElderProgress] = useState({ current: 0, total: 25, message: '', status: 'idle' });
+  const [paulElderMessages, setPaulElderMessages] = useState([]);
+  const [srlProgress, setSrlProgress] = useState({ current: 0, total: 25, message: '', status: 'idle' });
+  const [srlMessages, setSrlMessages] = useState([]);
+  const [gradingProgress, setGradingProgress] = useState({ current: 0, total: 25, message: '', status: 'idle' });
+  const [gradingMessages, setGradingMessages] = useState([]);
   const [srlData, setSrlData] = useState(null);
   const [srlLoading, setSrlLoading] = useState(false);
   const [srlError, setSrlError] = useState(null);
@@ -64,42 +68,32 @@ const DashboardPage = () => {
   }, [datasetId]);
 
   const handleAnalyzeClassification = async () => {
-    setCurrentAnalysis('paulElder');
     setClassificationLoading(true);
     setClassificationError(null);
-    setAnalysisProgress({ current: 0, total: 50, message: 'Starting analysis...', status: 'running' });
-    setProgressMessages(['Starting analysis...']);
+    setPaulElderProgress({ current: 0, total: 25, message: 'Starting Paul-Elder conversation analysis...', status: 'running' });
+    setPaulElderMessages(['Starting Paul-Elder conversation analysis...']);
     
-    // Poll for progress updates
     const progressInterval = setInterval(async () => {
       try {
         const progress = await getAnalysisProgress(datasetId, 'paul_elder');
-        setAnalysisProgress(progress);
-        
-        // Add new messages to the log
-        setProgressMessages(prev => {
+        setPaulElderProgress(progress);
+        setPaulElderMessages(prev => {
           if (progress.message && !prev.includes(progress.message)) {
-            const newMessages = [...prev, progress.message];
-            // Keep only last 10 messages
-            return newMessages.slice(-10);
+            return [...prev, progress.message].slice(-10);
           }
           return prev;
         });
-        
-        // Stop polling if complete
-        if (progress.status === 'complete') {
-          clearInterval(progressInterval);
-        }
+        if (progress.status === 'complete') clearInterval(progressInterval);
       } catch (err) {
         console.error('Error fetching progress:', err);
       }
-    }, 500); // Poll every 500ms
+    }, 500);
     
     try {
       const results = await analyzeClassification(datasetId);
       clearInterval(progressInterval);
-      setAnalysisProgress({ current: results.analyzed_count, total: results.analyzed_count, message: 'Analysis complete!', status: 'complete' });
-      setProgressMessages(prev => [...prev, 'Analysis complete!']);
+      setPaulElderProgress({ current: results.analyzed_count, total: results.analyzed_count, message: 'Analysis complete!', status: 'complete' });
+      setPaulElderMessages(prev => [...prev, 'Analysis complete!']);
       setClassificationData(results);
       // Update the main data object with classification results
       setData(prevData => ({
@@ -118,7 +112,7 @@ const DashboardPage = () => {
         err.message || 
         'Failed to analyze classification'
       );
-      setAnalysisProgress(prev => ({ ...prev, status: 'idle' }));
+      setPaulElderProgress(prev => ({ ...prev, status: 'idle' }));
       console.error('Error analyzing classification:', err);
     } finally {
       setClassificationLoading(false);
@@ -126,16 +120,15 @@ const DashboardPage = () => {
   };
 
   const handleAnalyzeSRL = async () => {
-    setCurrentAnalysis('srl');
     setSrlLoading(true);
     setSrlError(null);
-    setAnalysisProgress({ current: 0, total: 50, message: 'Starting SRL analysis...', status: 'running' });
-    setProgressMessages(['Starting SRL analysis...']);
+    setSrlProgress({ current: 0, total: 25, message: 'Starting SRL conversation analysis...', status: 'running' });
+    setSrlMessages(['Starting SRL conversation analysis...']);
     const progressInterval = setInterval(async () => {
       try {
         const progress = await getAnalysisProgress(datasetId, 'srl');
-        setAnalysisProgress(progress);
-        setProgressMessages(prev => {
+        setSrlProgress(progress);
+        setSrlMessages(prev => {
           if (progress.message && !prev.includes(progress.message)) {
             return [...prev, progress.message].slice(-10);
           }
@@ -147,13 +140,13 @@ const DashboardPage = () => {
     try {
       const results = await analyzeSRL(datasetId);
       clearInterval(progressInterval);
-      setAnalysisProgress({ current: results.analyzed_count, total: results.analyzed_count, message: 'SRL analysis complete!', status: 'complete' });
-      setProgressMessages(prev => [...prev, 'SRL analysis complete!']);
+      setSrlProgress({ current: results.analyzed_count, total: results.analyzed_count, message: 'SRL analysis complete!', status: 'complete' });
+      setSrlMessages(prev => [...prev, 'SRL analysis complete!']);
       setSrlData(results);
     } catch (err) {
       clearInterval(progressInterval);
       setSrlError(err.response?.data?.message || err.message || 'Failed to run SRL analysis');
-      setAnalysisProgress(prev => ({ ...prev, status: 'idle' }));
+      setSrlProgress(prev => ({ ...prev, status: 'idle' }));
       console.error(err);
     } finally {
       setSrlLoading(false);
@@ -161,16 +154,15 @@ const DashboardPage = () => {
   };
 
   const handleAnalyzeGrading = async () => {
-    setCurrentAnalysis('grading');
     setGradingLoading(true);
     setGradingError(null);
-    setAnalysisProgress({ current: 0, total: 50, message: 'Grading prompts...', status: 'running' });
-    setProgressMessages(['Grading prompts...']);
+    setGradingProgress({ current: 0, total: 25, message: 'Grading conversations...', status: 'running' });
+    setGradingMessages(['Grading conversations...']);
     const progressInterval = setInterval(async () => {
       try {
         const progress = await getAnalysisProgress(datasetId, 'grading');
-        setAnalysisProgress(progress);
-        setProgressMessages(prev => {
+        setGradingProgress(progress);
+        setGradingMessages(prev => {
           if (progress.message && !prev.includes(progress.message)) {
             return [...prev, progress.message].slice(-10);
           }
@@ -182,8 +174,8 @@ const DashboardPage = () => {
     try {
       const results = await analyzeGrading(datasetId);
       clearInterval(progressInterval);
-      setAnalysisProgress({ current: results.analyzed_count, total: results.analyzed_count, message: 'Grading complete!', status: 'complete' });
-      setProgressMessages(prev => [...prev, 'Grading complete!']);
+      setGradingProgress({ current: results.analyzed_count, total: results.analyzed_count, message: 'Grading complete!', status: 'complete' });
+      setGradingMessages(prev => [...prev, 'Grading complete!']);
       setGradingData(results.grading_results);
       setData(prev => ({
         ...prev,
@@ -198,7 +190,7 @@ const DashboardPage = () => {
     } catch (err) {
       clearInterval(progressInterval);
       setGradingError(err.response?.data?.message || err.message || 'Failed to grade prompts');
-      setAnalysisProgress(prev => ({ ...prev, status: 'idle' }));
+      setGradingProgress(prev => ({ ...prev, status: 'idle' }));
       console.error(err);
     } finally {
       setGradingLoading(false);
@@ -278,6 +270,21 @@ const DashboardPage = () => {
     }))
     .sort((a, b) => b.value - a.value);
 
+  const paulElderRunning = classificationLoading || paulElderProgress.status === 'running';
+  const srlRunning = srlLoading || srlProgress.status === 'running';
+  const gradingRunning = gradingLoading || gradingProgress.status === 'running';
+  const anyModelRunning = paulElderRunning || srlRunning || gradingRunning;
+  const runningModelName = paulElderRunning
+    ? 'Paul-Elder'
+    : srlRunning
+      ? 'SRL'
+      : gradingRunning
+        ? 'Prompt Quality (Grading)'
+        : '';
+  const paulElderLockedByOther = anyModelRunning && !paulElderRunning;
+  const srlLockedByOther = anyModelRunning && !srlRunning;
+  const gradingLockedByOther = anyModelRunning && !gradingRunning;
+
   return (
     <div className="dashboard-page">
       <div className="dashboard-container">
@@ -300,6 +307,11 @@ const DashboardPage = () => {
         </div>
 
         {/* Framework Analysis Cards - Side by Side */}
+        {anyModelRunning && (
+          <div className="model-lock-banner">
+            {runningModelName} is currently running. Other models are temporarily locked until it finishes.
+          </div>
+        )}
         <div className="framework-cards-container">
           {/* Paul-Elder Card */}
           <div className="framework-card">
@@ -362,10 +374,10 @@ const DashboardPage = () => {
               <div className="framework-card-action">
                 <button 
                   onClick={handleAnalyzeClassification}
-                  disabled={classificationLoading}
-                  className="action-button primary analyze-button"
+                  disabled={classificationLoading || anyModelRunning}
+                  className={`action-button primary analyze-button ${paulElderLockedByOther ? 'locked-model-button' : ''}`}
                 >
-                  Analyze 50 Sample Prompts
+                  Analyze Up to 25 Conversations (Paul-Elder)
                 </button>
                 {classificationError && (
                   <div className="error-message" style={{ color: 'red', marginTop: '10px', fontSize: '0.875rem' }}>
@@ -375,25 +387,25 @@ const DashboardPage = () => {
               </div>
             )}
             
-            {(classificationLoading || (analysisProgress.status === 'running' && analysisProgress.current > 0)) && currentAnalysis === 'paulElder' && (
-              <div className="progress-section">
+            {!effectiveClassificationData && (classificationLoading || paulElderProgress.status === 'running') && (
+              <div className="progress-section" data-framework="paul-elder">
                 <div className="progress-header">
-                  <span>{analysisProgress.message || 'Analyzing prompts...'}</span>
+                  <span>{paulElderProgress.message || 'Analyzing conversations (Paul-Elder)...'}</span>
                   <span className="progress-text">
-                    {analysisProgress.current} / {analysisProgress.total}
+                    {paulElderProgress.current} / {paulElderProgress.total}
                   </span>
                 </div>
                 <div className="progress-bar">
                   <div 
                     className="progress-fill" 
-                    style={{ width: `${(analysisProgress.total > 0 ? (analysisProgress.current / analysisProgress.total) * 100 : 0)}%` }}
+                    style={{ width: `${(paulElderProgress.total > 0 ? (paulElderProgress.current / paulElderProgress.total) * 100 : 0)}%` }}
                   ></div>
                 </div>
-                {progressMessages.length > 0 && (
+                {paulElderMessages.length > 0 && (
                   <div className="progress-messages">
-                    <div className="progress-messages-header">Console Output:</div>
+                    <div className="progress-messages-header">Console Output (Paul-Elder):</div>
                     <div className="progress-messages-list">
-                      {progressMessages.map((msg, idx) => (
+                      {paulElderMessages.map((msg, idx) => (
                         <div key={idx} className="progress-message-item">
                           {msg}
                         </div>
@@ -415,9 +427,9 @@ const DashboardPage = () => {
                     <div className="summary-value">{criticalThinkingPercentage.toFixed(1)}%</div>
                   </div>
                   <div className="summary-stat">
-                    <div className="summary-label">Prompts Analyzed</div>
+                    <div className="summary-label">Conversations Analyzed</div>
                     <div className="summary-value">{classifiedCount}</div>
-                    <div className="summary-note">(First 50 prompts)</div>
+                    <div className="summary-note">(Capped to first 25 conversations)</div>
                   </div>
                 </div>
                 
@@ -461,8 +473,8 @@ const DashboardPage = () => {
             </div>
             <div className="framework-description-text">
               <p className="framework-intro">
-                <strong>SRL analysis</strong> classifies each prompt using three models (self-regulated learning and educational psychology), 
-                reporting Zimmerman's phases, COPES (Winne &amp; Hadwin), and Bloom's level. It evaluates your prompts against these dimensions:
+                <strong>SRL analysis</strong> classifies each conversation using three models (self-regulated learning and educational psychology), 
+                reporting Zimmerman's phases, COPES (Winne &amp; Hadwin), and Bloom's level. It evaluates each conversation against these dimensions:
               </p>
               <ul className="framework-standards">
                 <li>
@@ -478,10 +490,10 @@ const DashboardPage = () => {
                   Indicators: "That didn't work", "I understand now", past tense.
                 </li>
                 <li>
-                  <strong>Conditions (C)</strong> — Resources or constraints mentioned. Scored 0 or 1 within the assigned Zimmerman phase.
+                  <strong>Conditions (C)</strong> — Resources or constraints mentioned. Scored 0–3 (0 absent, 3 consistent).
                 </li>
                 <li>
-                  <strong>Operations (O)</strong> — Cognitive processes, tactics, or strategies shown. COPES total is 0–5 per message.
+                  <strong>Operations (O)</strong> — Cognitive processes, tactics, or strategies shown. COPES total is 0–15 per conversation.
                 </li>
                 <li>
                   <strong>Products (P)</strong> — Information or new knowledge created by operations.
@@ -493,7 +505,7 @@ const DashboardPage = () => {
                   <strong>Standards (S)</strong> — Success criteria or criteria against which products are evaluated.
                 </li>
                 <li>
-                  <strong>Bloom's Taxonomy (1956)</strong> — One level per message: Knowledge → Comprehension → Application → Analysis → Synthesis → Evaluation (with confidence and rationale).
+                  <strong>Bloom's Taxonomy (1956)</strong> — One level per conversation: Knowledge → Comprehension → Application → Analysis → Synthesis → Evaluation (with confidence and rationale).
                 </li>
               </ul>
               <p className="framework-source">
@@ -504,10 +516,10 @@ const DashboardPage = () => {
               <div className="framework-card-action">
                 <button
                   onClick={handleAnalyzeSRL}
-                  disabled={srlLoading}
-                  className="action-button primary analyze-button"
+                  disabled={srlLoading || anyModelRunning}
+                  className={`action-button primary analyze-button ${srlLockedByOther ? 'locked-model-button' : ''}`}
                 >
-                  Analyze 50 Sample Prompts (SRL)
+                  Analyze Up to 25 Conversations (SRL)
                 </button>
                 {srlError && (
                   <div className="error-message" style={{ color: 'red', marginTop: '10px', fontSize: '0.875rem' }}>
@@ -516,69 +528,167 @@ const DashboardPage = () => {
                 )}
               </div>
             )}
-            {srlLoading && (
-              <div className="progress-section">
+            {!srlData && (srlLoading || srlProgress.status === 'running') && (
+              <div className="progress-section" data-framework="srl">
                 <div className="progress-header">
-                  <span>{analysisProgress.message || 'Analyzing...'}</span>
-                  <span className="progress-text">{analysisProgress.current} / {analysisProgress.total}</span>
+                  <span>{srlProgress.message || 'Analyzing conversations (SRL)...'}</span>
+                  <span className="progress-text">{srlProgress.current} / {srlProgress.total}</span>
                 </div>
                 <div className="progress-bar">
-                  <div className="progress-fill" style={{ width: `${(analysisProgress.total > 0 ? (analysisProgress.current / analysisProgress.total) * 100 : 0)}%` }}></div>
+                  <div className="progress-fill" style={{ width: `${(srlProgress.total > 0 ? (srlProgress.current / srlProgress.total) * 100 : 0)}%` }}></div>
                 </div>
-                {progressMessages.length > 0 && (
+                {srlMessages.length > 0 && (
                   <div className="progress-messages">
-                    <div className="progress-messages-header">Console Output:</div>
+                    <div className="progress-messages-header">Console Output (SRL):</div>
                     <div className="progress-messages-list">
-                      {progressMessages.map((msg, idx) => (
+                      {srlMessages.map((msg, idx) => (
                         <div key={idx} className="progress-message-item">{msg}</div>
                       ))}
                     </div>
                   </div>
                 )}
+                <p className="progress-note">This may take a few minutes...</p>
               </div>
             )}
             {srlData && (
               <div className="framework-results">
                 <div className="framework-summary">
                   <div className="summary-stat">
-                    <div className="summary-label">Zimmerman phases</div>
+                    <div className="summary-label">Dominant phases</div>
                     <div className="summary-value">{Object.keys(srlData.phase_distribution || {}).join(', ')}</div>
                   </div>
                   <div className="summary-stat">
                     <div className="summary-label">COPES average</div>
-                    <div className="summary-value">{srlData.copes_average != null ? srlData.copes_average.toFixed(1) : '—'}/5</div>
+                    <div className="summary-value">{srlData.copes_average != null ? srlData.copes_average.toFixed(1) : '—'}/15</div>
                   </div>
                   <div className="summary-stat">
                     <div className="summary-label">Bloom's avg level</div>
                     <div className="summary-value">{srlData.blooms_average_level != null ? srlData.blooms_average_level.toFixed(1) : '—'}/6</div>
                   </div>
                   <div className="summary-stat">
-                    <div className="summary-label">Prompts analyzed</div>
+                    <div className="summary-label">Conversations analyzed</div>
                     <div className="summary-value">{srlData.analyzed_count}</div>
+                  </div>
+                  <div className="summary-stat">
+                    <div className="summary-label">Critical thinking %</div>
+                    <div className="summary-value">
+                      {srlData.critical_thinking_summary?.critical_thinking_rate_percent != null
+                        ? `${srlData.critical_thinking_summary.critical_thinking_rate_percent.toFixed(1)}%`
+                        : '—'}
+                    </div>
+                  </div>
+                  <div className="summary-stat">
+                    <div className="summary-label">Non-critical thinking %</div>
+                    <div className="summary-value">
+                      {srlData.critical_thinking_summary?.non_critical_thinking_rate_percent != null
+                        ? `${srlData.critical_thinking_summary.non_critical_thinking_rate_percent.toFixed(1)}%`
+                        : '—'}
+                    </div>
                   </div>
                 </div>
                 <div className="category-breakdown">
-                  <h3>Phase distribution</h3>
+                  <h3>Dominant phase distribution</h3>
                   <div className="breakdown-list">
                     {srlData.phase_distribution && Object.entries(srlData.phase_distribution).map(([phase, count]) => (
                       <div key={phase} className="breakdown-item">
                         <span className="breakdown-name">{phase}</span>
-                        <span className="breakdown-count">{count} message{count !== 1 ? 's' : ''}</span>
+                        <span className="breakdown-count">{count} conversation{count !== 1 ? 's' : ''}</span>
                       </div>
                     ))}
                   </div>
                 </div>
-                {srlData.message_results && srlData.message_results.length > 0 && (
+                {srlData.critical_thinking_summary && (
                   <div className="category-breakdown">
-                    <h3>Sample results</h3>
+                    <h3>Critical thinking distribution</h3>
                     <div className="breakdown-list">
-                      {srlData.message_results.slice(0, 5).map((row, idx) => (
+                      <div className="breakdown-item">
+                        <span className="breakdown-name">Critical Thinking</span>
+                        <span className="breakdown-count">
+                          {srlData.critical_thinking_summary.critical_thinking} conversations
+                          {' '}({srlData.critical_thinking_summary.category_percentages?.['Critical Thinking']?.toFixed?.(1) ?? '0.0'}%)
+                          {' '}· {srlData.critical_thinking_summary.categories_present?.includes('Critical Thinking') ? 'Present' : 'Not present'}
+                        </span>
+                      </div>
+                      <div className="breakdown-item">
+                        <span className="breakdown-name">Developing Critical Thinking</span>
+                        <span className="breakdown-count">
+                          {srlData.critical_thinking_summary.developing_critical_thinking} conversations
+                          {' '}({srlData.critical_thinking_summary.category_percentages?.['Developing Critical Thinking']?.toFixed?.(1) ?? '0.0'}%)
+                          {' '}· {srlData.critical_thinking_summary.categories_present?.includes('Developing Critical Thinking') ? 'Present' : 'Not present'}
+                        </span>
+                      </div>
+                      <div className="breakdown-item">
+                        <span className="breakdown-name">Efficient Help-Seeking</span>
+                        <span className="breakdown-count">
+                          {srlData.critical_thinking_summary.efficient_help_seeking} conversations
+                          {' '}({srlData.critical_thinking_summary.category_percentages?.['Efficient Help-Seeking']?.toFixed?.(1) ?? '0.0'}%)
+                          {' '}· {srlData.critical_thinking_summary.categories_present?.includes('Efficient Help-Seeking') ? 'Present' : 'Not present'}
+                        </span>
+                      </div>
+                      <div className="breakdown-item">
+                        <span className="breakdown-name">Low Critical Thinking</span>
+                        <span className="breakdown-count">
+                          {srlData.critical_thinking_summary.low_critical_thinking} conversations
+                          {' '}({srlData.critical_thinking_summary.category_percentages?.['Low Critical Thinking']?.toFixed?.(1) ?? '0.0'}%)
+                          {' '}· {srlData.critical_thinking_summary.categories_present?.includes('Low Critical Thinking') ? 'Present' : 'Not present'}
+                        </span>
+                      </div>
+                      <div className="breakdown-item">
+                        <span className="breakdown-name">Unclassifiable</span>
+                        <span className="breakdown-count">{srlData.critical_thinking_summary.unclassifiable} conversations</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                {srlData.conversation_results && srlData.conversation_results.length > 0 && (
+                  <div className="category-breakdown">
+                    <h3>Conversation-level SRL results</h3>
+                    <div className="breakdown-list">
+                      {srlData.conversation_results.map((row, idx) => (
                         <div key={idx} className="breakdown-item">
                           <div className="breakdown-header">
-                            <span className="breakdown-name">{row.zimmerman_phase}</span>
-                            <span className="breakdown-percentage">COPES: {row.copes_score}/5 · Bloom's: {row.blooms_name}</span>
+                            <span className="breakdown-name">{row.topic || 'Untitled conversation'}</span>
+                            <span className="breakdown-percentage">Messages: {row.message_count}</span>
                           </div>
-                          <div className="breakdown-count" title={row.message}>{row.message}</div>
+                          <div className="breakdown-count">Dominant phase: {row.zimmerman?.dominant_phase || row.zimmerman_phase || 'N/A'}</div>
+                          <div className="breakdown-count">
+                            Phase distribution: Forethought {row.zimmerman?.distribution_percent?.forethought ?? 0}% ·
+                            Performance {row.zimmerman?.distribution_percent?.performance ?? 0}% ·
+                            Self-Reflection {row.zimmerman?.distribution_percent?.self_reflection ?? 0}%
+                          </div>
+                          <div className="breakdown-count">
+                            COPES: {row.copes_score}/15
+                            {' '}(
+                            C:{row.copes_components?.C ?? 0}
+                            {' '}O:{row.copes_components?.O ?? 0}
+                            {' '}P:{row.copes_components?.P ?? 0}
+                            {' '}E:{row.copes_components?.E ?? 0}
+                            {' '}S:{row.copes_components?.S ?? 0}
+                            )
+                          </div>
+                          <div className="breakdown-count">
+                            Bloom&apos;s: {row.blooms?.name || row.blooms_name || 'N/A'}
+                            {row.blooms?.level != null || row.blooms_level != null ? ` (L${row.blooms?.level ?? row.blooms_level})` : ''}
+                            {' '}· Confidence: {typeof (row.blooms?.confidence ?? row.blooms_confidence) === 'number' ? (row.blooms?.confidence ?? row.blooms_confidence).toFixed(2) : '0.00'}
+                          </div>
+                          <div className="breakdown-count">
+                            CT Category: {row.ct_classification || 'N/A'}
+                          </div>
+                          {row.ct_rationale && (
+                            <div className="breakdown-count">{row.ct_rationale}</div>
+                          )}
+                          {row.sample_messages && row.sample_messages.length > 0 && (
+                            <div className="breakdown-examples">
+                              <strong>Sample messages:</strong>
+                              <ul>
+                                {row.sample_messages.map((sample, sampleIdx) => (
+                                  <li key={sampleIdx} title={sample}>
+                                    {sample}
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -610,10 +720,10 @@ const DashboardPage = () => {
               <div className="framework-card-action">
                 <button
                   onClick={handleAnalyzeGrading}
-                  disabled={gradingLoading}
-                  className="action-button primary analyze-button"
+                  disabled={gradingLoading || anyModelRunning}
+                  className={`action-button primary analyze-button ${gradingLockedByOther ? 'locked-model-button' : ''}`}
                 >
-                  Grade 50 Sample Prompts
+                  Grade Up to 25 Conversations
                 </button>
                 {gradingError && (
                   <div className="error-message" style={{ color: 'red', marginTop: '10px', fontSize: '0.875rem' }}>
@@ -622,20 +732,20 @@ const DashboardPage = () => {
                 )}
               </div>
             )}
-            {gradingLoading && (
-              <div className="progress-section">
+            {!gradingData && !data?.analysis?.grading_results && (gradingLoading || gradingProgress.status === 'running') && (
+              <div className="progress-section" data-framework="grading">
                 <div className="progress-header">
-                  <span>{analysisProgress.message || 'Grading...'}</span>
-                  <span className="progress-text">{analysisProgress.current} / {analysisProgress.total}</span>
+                  <span>{gradingProgress.message || 'Grading conversations...'}</span>
+                  <span className="progress-text">{gradingProgress.current} / {gradingProgress.total}</span>
                 </div>
                 <div className="progress-bar">
-                  <div className="progress-fill" style={{ width: `${(analysisProgress.total > 0 ? (analysisProgress.current / analysisProgress.total) * 100 : 0)}%` }}></div>
+                  <div className="progress-fill" style={{ width: `${(gradingProgress.total > 0 ? (gradingProgress.current / gradingProgress.total) * 100 : 0)}%` }}></div>
                 </div>
-                {progressMessages.length > 0 && (
+                {gradingMessages.length > 0 && (
                   <div className="progress-messages">
-                    <div className="progress-messages-header">Console Output:</div>
+                    <div className="progress-messages-header">Console Output (Grading):</div>
                     <div className="progress-messages-list">
-                      {progressMessages.map((msg, idx) => (
+                      {gradingMessages.map((msg, idx) => (
                         <div key={idx} className="progress-message-item">{msg}</div>
                       ))}
                     </div>

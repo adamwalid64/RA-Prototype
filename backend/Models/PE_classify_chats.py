@@ -21,14 +21,17 @@ print("Loading classification model...")
 
 # Initialize OpenAI client lazily (only when needed)
 client = None
+client_api_key = None
 
-def get_openai_client():
+def get_openai_client(api_key=None):
     """Get or create OpenAI client"""
-    global client
-    if client is None:
-        if not OPENAI_API_KEY:
+    global client, client_api_key
+    effective_key = (api_key or OPENAI_API_KEY or "").strip()
+    if client is None or client_api_key != effective_key:
+        if not effective_key:
             raise ValueError("OPENAI_API_KEY environment variable is not set. Please set it in your .env file.")
-        client = OpenAI(api_key=OPENAI_API_KEY)
+        client = OpenAI(api_key=effective_key)
+        client_api_key = effective_key
     return client
 
 print("Model loaded!")
@@ -132,7 +135,7 @@ critical_thinking_categories = {
     }
 }
 
-def classify_with_ai(text):
+def classify_with_ai(text, api_key=None):
     # Classify message using AI with your 9 critical thinking categories
     # The AI learns from the example questions to understand each category
     
@@ -158,7 +161,7 @@ def classify_with_ai(text):
     Classification:"""
 
     # Call OpenAI API
-    openai_client = get_openai_client()
+    openai_client = get_openai_client(api_key=api_key)
     response = openai_client.chat.completions.create(
         model="gpt-4o-mini",  # Cheaper model, or use "gpt-4o" for best quality
         messages=[
@@ -192,23 +195,24 @@ def classify_with_ai(text):
         'confidence': confidence,
     }
 
-def analyze_chat_history(messages, progress_callback=None):
-    # analyze a list of messages and return statistics
+def analyze_chat_history(messages, progress_callback=None, unit_label="message", api_key=None):
+    # analyze a list of items (messages/conversations) and return statistics
     results = []
     total = len(messages)
+    label_plural = f"{unit_label}s" if not unit_label.endswith("s") else unit_label
     
-    log_message = f"\nAnalyzing {total} messages...\n"
+    log_message = f"\nAnalyzing {total} {label_plural}...\n"
     print(log_message)
     if progress_callback:
         progress_callback(0, total, log_message.strip())
     
     for i, msg in enumerate(messages, 1):
-        log_message = f"Processing message {i}/{total}..."
+        log_message = f"Processing {unit_label} {i}/{total}..."
         print(log_message, end='\r')
         if progress_callback:
             progress_callback(i, total, log_message)
         
-        classification = classify_with_ai(msg)
+        classification = classify_with_ai(msg, api_key=api_key)
         results.append({
             'message': msg,
             'category': classification['category'],
@@ -217,7 +221,7 @@ def analyze_chat_history(messages, progress_callback=None):
 
         # Wait 20 seconds every 3 messages to avoid rate limit
         if i % 3 == 0 and i < len(messages):
-            log_message = f"\nRate limit: Waiting 20 seconds... ({i}/{total} done)"
+            log_message = f"\nRate limit: Waiting 20 seconds... ({i}/{total} {label_plural} done)"
             print(log_message)
             if progress_callback:
                 progress_callback(i, total, log_message.strip())

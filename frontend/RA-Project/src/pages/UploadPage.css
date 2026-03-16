@@ -140,6 +140,40 @@
   gap: 0.5rem;
 }
 
+.api-key-section {
+  margin-top: 1rem;
+}
+
+.api-key-label {
+  display: block;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #374151;
+  margin-bottom: 0.4rem;
+}
+
+.api-key-input {
+  width: 100%;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  font-size: 0.95rem;
+  color: #111827;
+  background: #ffffff;
+}
+
+.api-key-input:focus {
+  outline: none;
+  border-color: #22b800;
+  box-shadow: 0 0 0 3px rgba(34, 184, 0, 0.15);
+}
+
+.api-key-hint {
+  margin-top: 0.4rem;
+  font-size: 0.8rem;
+  color: #6b7280;
+}
+
 .upload-button {
   width: 100%;
   margin-top: 1.5rem;

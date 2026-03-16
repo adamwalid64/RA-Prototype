@@ -8,6 +8,7 @@ const UploadPage = () => {
   const [file, setFile] = useState(null);
   const [fileContent, setFileContent] = useState(null);
   const [fileName, setFileName] = useState('');
+  const [apiKey, setApiKey] = useState('');
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState(null);
   const [validationErrors, setValidationErrors] = useState([]);
@@ -93,12 +94,16 @@ const UploadPage = () => {
       setValidationErrors(errors);
       return;
     }
+    if (!apiKey.trim()) {
+      setError('Please enter your OpenAI API key');
+      return;
+    }
 
     setUploading(true);
     setError(null);
 
     try {
-      const response = await uploadFile(file);
+      const response = await uploadFile(file, apiKey.trim());
       // Navigate to dashboard with dataset_id
       navigate(`/dashboard/${response.dataset_id}`);
     } catch (err) {
@@ -229,6 +234,24 @@ const UploadPage = () => {
           )}
         </div>
 
+        <div className="api-key-section">
+          <label htmlFor="api-key-input" className="api-key-label">
+            OpenAI API Key
+          </label>
+          <input
+            id="api-key-input"
+            type="password"
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+            placeholder="sk-..."
+            className="api-key-input"
+            autoComplete="off"
+          />
+          <div className="api-key-hint">
+            Your key is used only for this uploaded dataset and is not shared.
+          </div>
+        </div>
+
         {validationErrors.length > 0 && (
           <div className="validation-errors">
             {validationErrors.map((err, idx) => (
@@ -244,7 +267,7 @@ const UploadPage = () => {
         <button
           className="upload-button"
           onClick={handleUpload}
-          disabled={!file || uploading}
+          disabled={!file || !apiKey.trim() || uploading}
         >
           {uploading ? 'Uploading...' : 'Upload & Analyze'}
         </button>

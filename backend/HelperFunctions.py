@@ -4,6 +4,7 @@ import json
 import re
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from collections import Counter
@@ -27,7 +28,30 @@ def _utc_iso(ts: Optional[float]) -> Optional[str]:
     try:
         return datetime.fromtimestamp(float(ts), tz=timezone.utc).isoformat()
     except Exception:
-        return None
+        try:
+            # Handle ISO timestamps commonly found in non-ChatGPT exports.
+            ts_str = str(ts).strip()
+            if ts_str.endswith("Z"):
+                ts_str = ts_str[:-1] + "+00:00"
+            return datetime.fromisoformat(ts_str).astimezone(timezone.utc).isoformat()
+        except Exception:
+            return None
+
+
+def _to_json_compatible(value: Any) -> Any:
+    """
+    Recursively convert values that json.dumps cannot encode by default.
+    """
+    if isinstance(value, Decimal):
+        # Preserve numeric semantics for downstream analysis.
+        return float(value)
+    if isinstance(value, dict):
+        return {k: _to_json_compatible(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_to_json_compatible(v) for v in value]
+    if isinstance(value, tuple):
+        return tuple(_to_json_compatible(v) for v in value)
+    return value
 
 
 def _extract_text_from_message(message: Dict[str, Any]) -> Optional[str]:
@@ -52,6 +76,142 @@ def _extract_text_from_message(message: Dict[str, Any]) -> Optional[str]:
     # Some exports include other content types (images, code, etc.).
     # If you later want those too, you can extend here.
     return None
+
+
+def _extract_text_from_flexible_message(message: Dict[str, Any]) -> Optional[str]:
+    """
+    Extract text from multiple chat export schemas, including Claude-like exports.
+    """
+    candidates: List[str] = []
+
+    def _append_text(value: Any) -> None:
+        if value is None:
+            return
+        if isinstance(value, str):
+            text = value.strip()
+            if text:
+                candidates.append(text)
+            return
+        if isinstance(value, list):
+            for item in value:
+                _append_text(item)
+            return
+        if isinstance(value, dict):
+            # OpenAI-style block
+            if isinstance(value.get("text"), str):
+                _append_text(value.get("text"))
+            # Claude-export style block
+            if isinstance(value.get("data"), str):
+                _append_text(value.get("data"))
+            # Nested content object
+            if "content" in value:
+                _append_text(value.get("content"))
+            # Parts arrays
+            if "parts" in value:
+                _append_text(value.get("parts"))
+
+    # Common direct fields
+    _append_text(message.get("text"))
+    _append_text(message.get("message"))
+    _append_text(message.get("data"))
+
+    # Generic content fields
+    content = message.get("content")
+    if isinstance(content, str):
+        _append_text(content)
+    elif isinstance(content, list):
+        _append_text(content)
+    elif isinstance(content, dict):
+        ctype = content.get("content_type")
+        if ctype == "text":
+            _append_text(content.get("parts"))
+        _append_text(content.get("text"))
+        _append_text(content.get("content"))
+
+    # Claude-export browser-script shape: {"type": "prompt/response", "message": [...]}
+    _append_text(message.get("message"))
+
+    if not candidates:
+        return None
+    # Preserve rough ordering while removing exact duplicates.
+    seen = set()
+    deduped: List[str] = []
+    for part in candidates:
+        if part in seen:
+            continue
+        seen.add(part)
+        deduped.append(part)
+    return "\n".join(deduped).strip() or None
+
+
+def _is_user_message(message: Dict[str, Any]) -> bool:
+    """
+    Infer whether a message was authored by the user across export formats.
+    """
+    sender = message.get("sender")
+    if isinstance(sender, str) and sender.lower() in {"human", "user", "person"}:
+        return True
+
+    role = message.get("role")
+    if isinstance(role, str) and role.lower() in {"human", "user", "person"}:
+        return True
+
+    author = message.get("author")
+    if isinstance(author, dict):
+        author_role = author.get("role")
+        if isinstance(author_role, str) and author_role.lower() in {"human", "user", "person"}:
+            return True
+    elif isinstance(author, str) and author.lower() in {"human", "user", "person"}:
+        return True
+
+    # Claude-export browser-script shape: type == prompt indicates user input.
+    msg_type = message.get("type")
+    if isinstance(msg_type, str) and msg_type.lower() == "prompt":
+        return True
+
+    return False
+
+
+def _detect_conversation_format(conversation: Dict[str, Any]) -> str:
+    """
+    Detect conversation schema family.
+    Returns: "chatgpt" or "generic"
+    """
+    if (
+        isinstance(conversation.get("mapping"), dict)
+        and "current_node" in conversation
+    ):
+        return "chatgpt"
+    return "generic"
+
+
+def _iter_user_prompt_messages(conversation: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
+    """
+    Yield user-authored message dicts from a conversation object.
+    """
+    fmt = _detect_conversation_format(conversation)
+    if fmt == "chatgpt":
+        for node in _walk_linear_thread(conversation):
+            message = node.get("message")
+            if not isinstance(message, dict):
+                continue
+            if _is_user_message(message):
+                yield message
+        return
+
+    messages_raw = (
+        conversation.get("chat_messages")
+        or conversation.get("messages")
+        or conversation.get("conversation")
+        or []
+    )
+    if not isinstance(messages_raw, list):
+        return
+    for msg in messages_raw:
+        if not isinstance(msg, dict):
+            continue
+        if _is_user_message(msg):
+            yield msg
 
 
 def _walk_linear_thread(conversation: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -98,50 +258,98 @@ def _stream_prompts_from_json(
     total_convo_count = 0
     per_convo_counts: List[Dict[str, Any]] = []
 
-    with path.open("rb") as f:
-        for convo in ijson.items(f, "item"):
-            total_convo_count += 1
-            if not isinstance(convo, dict):
-                continue
+    prefixes = ("item", "conversations.item", "chats.item")
+    found_stream = False
 
-            convo_id = str(convo.get("id") or "")
-            title = str(convo.get("title") or "")
-            convo_create_time = convo.get("create_time")
-            user_prompt_count = 0
+    for prefix in prefixes:
+        candidate_prompts: List[PromptRecord] = []
+        candidate_per_convo_counts: List[Dict[str, Any]] = []
+        candidate_total_prompt_count = 0
+        candidate_total_convo_count = 0
+        saw_any_dict = False
 
-            for node in _walk_linear_thread(convo):
-                message = node.get("message")
-                if not isinstance(message, dict):
+        with path.open("rb") as f:
+            for convo in ijson.items(f, prefix):
+                if not isinstance(convo, dict):
                     continue
-                author = message.get("author") or {}
-                if author.get("role") != "user":
-                    continue
-                text = _extract_text_from_message(message)
-                if text is None and not include_empty:
-                    continue
-                text = text or ""
+                saw_any_dict = True
+                candidate_total_convo_count += 1
 
-                user_prompt_count += 1
-                total_prompt_count += 1
-                if max_prompts is None or len(prompts) < max_prompts:
-                    prompts.append(
-                        PromptRecord(
-                            conversation_id=convo_id,
-                            conversation_title=title,
-                            conversation_create_time=convo_create_time,
-                            message_id=str(message.get("id") or ""),
-                            message_create_time=message.get("create_time"),
-                            prompt_text=text,
+                convo_id = str(
+                    convo.get("id")
+                    or convo.get("uuid")
+                    or convo.get("chat_id")
+                    or convo.get("conversation_id")
+                    or ""
+                )
+                title = str(
+                    convo.get("title")
+                    or convo.get("name")
+                    or convo.get("topic")
+                    or convo.get("subject")
+                    or ""
+                )
+                convo_create_time = (
+                    convo.get("create_time")
+                    or convo.get("created_at")
+                    or convo.get("timestamp")
+                )
+                user_prompt_count = 0
+
+                fmt = _detect_conversation_format(convo)
+                for msg_idx, message in enumerate(_iter_user_prompt_messages(convo), 1):
+                    if fmt == "chatgpt":
+                        text = _extract_text_from_message(message)
+                    else:
+                        text = _extract_text_from_flexible_message(message)
+                    if text is None and not include_empty:
+                        continue
+                    text = text or ""
+
+                    user_prompt_count += 1
+                    candidate_total_prompt_count += 1
+                    if max_prompts is None or len(candidate_prompts) < max_prompts:
+                        msg_id = str(
+                            message.get("id")
+                            or message.get("uuid")
+                            or f"{convo_id or 'conversation'}-msg-{msg_idx}"
                         )
-                    )
+                        msg_time = (
+                            message.get("create_time")
+                            or message.get("created_at")
+                            or message.get("timestamp")
+                        )
+                        candidate_prompts.append(
+                            PromptRecord(
+                                conversation_id=convo_id,
+                                conversation_title=title,
+                                conversation_create_time=convo_create_time,
+                                message_id=msg_id,
+                                message_create_time=msg_time,
+                                prompt_text=text,
+                            )
+                        )
 
-            per_convo_counts.append({
-                "conversation_id": convo_id,
-                "title": title,
-                "conversation_create_time": convo_create_time,
-                "conversation_create_time_iso_utc": _utc_iso(convo_create_time),
-                "user_prompt_count": user_prompt_count,
-            })
+                candidate_per_convo_counts.append({
+                    "conversation_id": convo_id,
+                    "title": title,
+                    "conversation_create_time": convo_create_time,
+                    "conversation_create_time_iso_utc": _utc_iso(convo_create_time),
+                    "user_prompt_count": user_prompt_count,
+                })
+
+        if saw_any_dict:
+            prompts = candidate_prompts
+            total_prompt_count = candidate_total_prompt_count
+            total_convo_count = candidate_total_convo_count
+            per_convo_counts = candidate_per_convo_counts
+            found_stream = True
+            break
+
+    if not found_stream:
+        raise ValueError(
+            "Unsupported JSON structure. Expected a top-level chat list or an object containing 'conversations' or 'chats'."
+        )
 
     return prompts, total_prompt_count, total_convo_count, per_convo_counts
 
@@ -153,12 +361,12 @@ def parse_chatgpt_prompts(
     max_prompts: Optional[int] = None,
 ) -> Tuple[List[PromptRecord], Dict[str, Any]]:
     """
-    Parse a ChatGPT export conversations.json and return:
+    Parse a chat export JSON and return:
       1) a list of PromptRecord (USER prompts only). If max_prompts is set, only the first N are loaded (saves memory).
       2) a summary dict (counts, per-conversation counts, timestamps)
 
     Args:
-        conversations_json_path: path to conversations.json from the ChatGPT data export zip
+        conversations_json_path: path to exported JSON (ChatGPT or Claude-like schemas)
         include_empty: if True, keep prompts even when the text is empty/None (rare)
         max_prompts: if set (e.g. 50), stream the JSON and only load the first N prompts (much lower memory for large files)
 
@@ -184,40 +392,72 @@ def parse_chatgpt_prompts(
 
     # Full in-memory parse (original behavior)
     data = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(data, list):
-        raise ValueError("Expected conversations.json to contain a list of conversations.")
+    if isinstance(data, list):
+        chats = data
+    elif isinstance(data, dict) and isinstance(data.get("conversations"), list):
+        chats = data.get("conversations") or []
+    elif isinstance(data, dict) and isinstance(data.get("chats"), list):
+        chats = data.get("chats") or []
+    else:
+        raise ValueError(
+            "Unknown JSON format. Expected a list of conversations or an object with 'conversations' or 'chats'."
+        )
 
     prompts = []
     per_convo_counts = []
 
-    for convo in data:
+    for convo in chats:
         if not isinstance(convo, dict):
             continue
-        convo_id = str(convo.get("id") or "")
-        title = str(convo.get("title") or "")
-        convo_create_time = convo.get("create_time")
+        convo_id = str(
+            convo.get("id")
+            or convo.get("uuid")
+            or convo.get("chat_id")
+            or convo.get("conversation_id")
+            or ""
+        )
+        title = str(
+            convo.get("title")
+            or convo.get("name")
+            or convo.get("topic")
+            or convo.get("subject")
+            or ""
+        )
+        convo_create_time = (
+            convo.get("create_time")
+            or convo.get("created_at")
+            or convo.get("timestamp")
+        )
         user_prompt_count = 0
 
-        for node in _walk_linear_thread(convo):
-            message = node.get("message")
-            if not isinstance(message, dict):
-                continue
-            author = message.get("author") or {}
-            if author.get("role") != "user":
-                continue
-            text = _extract_text_from_message(message)
+        fmt = _detect_conversation_format(convo)
+        for msg_idx, message in enumerate(_iter_user_prompt_messages(convo), 1):
+            if fmt == "chatgpt":
+                text = _extract_text_from_message(message)
+            else:
+                text = _extract_text_from_flexible_message(message)
             if text is None and not include_empty:
                 continue
             text = text or ""
 
             user_prompt_count += 1
+            msg_id = str(
+                message.get("id")
+                or message.get("uuid")
+                or f"{convo_id or 'conversation'}-msg-{msg_idx}"
+            )
+            msg_time = (
+                message.get("create_time")
+                or message.get("created_at")
+                or message.get("timestamp")
+            )
             prompts.append(
                 PromptRecord(
                     conversation_id=convo_id,
                     conversation_title=title,
                     conversation_create_time=convo_create_time,
-                    message_id=str(message.get("id") or ""),
-                    message_create_time=message.get("create_time"),
+                    message_id=msg_id,
+                    message_create_time=msg_time,
                     prompt_text=text,
                 )
             )
@@ -231,7 +471,7 @@ def parse_chatgpt_prompts(
         })
 
     summary = {
-        "total_conversations": len([c for c in data if isinstance(c, dict)]),
+        "total_conversations": len([c for c in chats if isinstance(c, dict)]),
         "total_user_prompts": len(prompts),
         "per_conversation": per_convo_counts,
     }
@@ -249,7 +489,8 @@ def prompts_to_jsonl(prompts: Iterable[PromptRecord], out_path: str | Path) -> N
             row = asdict(p)
             row["conversation_create_time_iso_utc"] = _utc_iso(p.conversation_create_time)
             row["message_create_time_iso_utc"] = _utc_iso(p.message_create_time)
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+            safe_row = _to_json_compatible(row)
+            f.write(json.dumps(safe_row, ensure_ascii=False) + "\n")
 
 # Count the number of prompts in a JSONL file
 def count_prompts_in_jsonl(path: str) -> int:

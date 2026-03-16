@@ -115,14 +115,14 @@ const ExportPage = () => {
           <div className="export-option">
             <div className="option-icon">📄</div>
             <div className="option-content">
-              <h2>JSON Format</h2>
-              <p>Machine-readable format with all analysis data, categories, and reflection content.</p>
+              <h2>CSV Format</h2>
+              <p>Spreadsheet-friendly export with one row per conversation and all available model metrics and scores.</p>
               <button
-                onClick={() => handleExport('json')}
+                onClick={() => handleExport('csv')}
                 disabled={exporting}
                 className="export-button primary"
               >
-                {exporting ? 'Exporting...' : 'Download JSON'}
+                {exporting ? 'Exporting...' : 'Download CSV'}
               </button>
             </div>
           </div>
@@ -131,7 +131,7 @@ const ExportPage = () => {
             <div className="option-icon">📋</div>
             <div className="option-content">
               <h2>PDF Format</h2>
-              <p>Human-readable report with charts, summaries, and reflection narrative.</p>
+              <p>Human-readable report with organized conversation-level summaries, sample messages, and full scoring details.</p>
               <button
                 onClick={() => handleExport('pdf')}
                 disabled={exporting}

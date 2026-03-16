@@ -63,7 +63,7 @@ export interface ReflectionResults {
 export interface ExportResponse {
   dataset_id: string;
   download_url: string;
-  file_type: 'json' | 'pdf';
+  file_type: 'csv' | 'pdf';
   expires_at?: string;
 }
 
